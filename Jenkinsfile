@@ -1,163 +1,160 @@
 pipeline {
-agent any
+    agent any
 
-```
-tools {
-    nodejs 'Node25'
-}
-
-environment {
-    GIT_REPO   = 'https://github.com/Samratstackly/stackly-email-main.git'
-    GIT_BRANCH = 'main'
-
-    SSH_KEY     = 'aws-jenkens'
-    DEPLOY_USER = 'ubuntu'
-    DEPLOY_HOST = '40.192.66.67'
-    APP_DIR     = '/home/ubuntu/stackly-email'
-}
-
-stages {
-
-    stage('Checkout Code') {
-        steps {
-            git url: "${GIT_REPO}", branch: "${GIT_BRANCH}"
-        }
+    tools {
+        nodejs 'Node25'
     }
 
-    stage('Check Tools') {
-        steps {
-            sh '''
-            set -e
-            echo "🔍 Checking tools"
+    environment {
+        GIT_REPO   = 'https://github.com/Samratstackly/stackly-email-main.git'
+        GIT_BRANCH = 'main'
 
-            node -v
-            npm -v
-
-            if ! command -v rsync > /dev/null; then
-                echo "❌ rsync not installed"
-                exit 1
-            fi
-            '''
-        }
+        SSH_KEY     = 'aws-jenkens'
+        DEPLOY_USER = 'ubuntu'
+        DEPLOY_HOST = '40.192.66.67'
+        APP_DIR     = '/home/ubuntu/stackly-email'
     }
 
-    stage('Build Frontend') {
-        steps {
-            sh '''
-            set -e
+    stages {
 
-            if [ -d frontend ]; then
-                echo "📦 Building frontend"
-                cd frontend
-                npm install
-                npm run build
-                cd ..
-            else
-                echo "⚠️ No frontend folder found"
-            fi
-            '''
+        stage('Checkout Code') {
+            steps {
+                git url: "${GIT_REPO}", branch: "${GIT_BRANCH}"
+            }
         }
-    }
 
-    stage('Deploy Code') {
-        steps {
-            sshagent([env.SSH_KEY]) {
-                sh """
+        stage('Check Tools') {
+            steps {
+                sh '''
                 set -e
-                echo "🚀 Deploying to EC2"
+                echo "🔍 Checking tools"
 
-                rsync -avz --delete \
-                  -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-                  --exclude='.git' \
-                  --exclude='node_modules' \
-                  --exclude='.env' \
-                  frontend \
-                  django_backend \
-                  email_project \
-                  fastapi_app \
-                  manage.py \
-                  requirements.txt \
-                  ${DEPLOY_USER}@${DEPLOY_HOST}:${APP_DIR}
-                """
+                node -v
+                npm -v
+
+                if ! command -v rsync > /dev/null; then
+                    echo "❌ rsync not installed"
+                    exit 1
+                fi
+                '''
             }
         }
-    }
 
-    stage('Remote Setup & Migrate') {
-        steps {
-            sshagent([env.SSH_KEY]) {
-                sh """
-                ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} '
+        stage('Build Frontend') {
+            steps {
+                sh '''
+                set -e
+
+                if [ -d frontend ]; then
+                    echo "📦 Building frontend"
+                    cd frontend
+                    npm install
+                    npm run build
+                    cd ..
+                else
+                    echo "⚠️ No frontend folder found"
+                fi
+                '''
+            }
+        }
+
+        stage('Deploy Code') {
+            steps {
+                sshagent([env.SSH_KEY]) {
+                    sh """
                     set -e
+                    echo "🚀 Deploying to EC2"
 
-                    echo "📁 Entering app directory"
-                    mkdir -p ${APP_DIR}
-                    cd ${APP_DIR}
+                    rsync -avz --delete \
+                      -e "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+                      --exclude='.git' \
+                      --exclude='node_modules' \
+                      --exclude='.env' \
+                      frontend \
+                      django_backend \
+                      email_project \
+                      fastapi_app \
+                      manage.py \
+                      requirements.txt \
+                      ${DEPLOY_USER}@${DEPLOY_HOST}:${APP_DIR}
+                    """
+                }
+            }
+        }
 
-                    echo "🐍 Setting up Python environment"
-                    if [ ! -d venv ]; then
-                        python3 -m venv venv
-                    fi
+        stage('Remote Setup & Migrate') {
+            steps {
+                sshagent([env.SSH_KEY]) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} '
+                        set -e
 
-                    source venv/bin/activate
+                        echo "📁 Entering app directory"
+                        mkdir -p ${APP_DIR}
+                        cd ${APP_DIR}
 
-                    echo "⬆️ Installing dependencies"
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
+                        echo "🐍 Setting up Python environment"
+                        if [ ! -d venv ]; then
+                            python3 -m venv venv
+                        fi
 
-                    echo "🧠 Running migrations"
-                    python manage.py migrate --noinput
+                        source venv/bin/activate
 
-                    echo "📦 Collect static files"
-                    python manage.py collectstatic --noinput || true
-                '
-                """
+                        echo "⬆️ Installing dependencies"
+                        pip install --upgrade pip
+                        pip install -r requirements.txt
+
+                        echo "🧠 Running migrations"
+                        python manage.py migrate --noinput
+
+                        echo "📦 Collect static files"
+                        python manage.py collectstatic --noinput || true
+                    '
+                    """
+                }
+            }
+        }
+
+        stage('Restart Services') {
+            steps {
+                sshagent([env.SSH_KEY]) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} '
+                        echo "🔄 Restarting services"
+
+                        sudo systemctl restart gunicorn || echo "⚠️ gunicorn not found"
+                        sudo systemctl restart nginx || echo "⚠️ nginx not found"
+                    '
+                    """
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sshagent([env.SSH_KEY]) {
+                    sh """
+                    ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} '
+                        echo "🩺 Running health check"
+
+                        curl -f http://127.0.0.1:8000 || {
+                            echo "❌ App not responding"
+                            exit 1
+                        }
+                    '
+                    """
+                }
             }
         }
     }
 
-    stage('Restart Services') {
-        steps {
-            sshagent([env.SSH_KEY]) {
-                sh """
-                ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} '
-                    echo "🔄 Restarting services"
-
-                    sudo systemctl restart gunicorn || echo "⚠️ gunicorn not found"
-                    sudo systemctl restart nginx || echo "⚠️ nginx not found"
-                '
-                """
-            }
+    post {
+        success {
+            echo '✅ Deployment successful 🚀'
+        }
+        failure {
+            echo '❌ Deployment failed – check logs'
         }
     }
-
-    stage('Health Check') {
-        steps {
-            sshagent([env.SSH_KEY]) {
-                sh """
-                ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} '
-                    echo "🩺 Running health check"
-
-                    curl -f http://127.0.0.1:8000 || {
-                        echo "❌ App not responding"
-                        exit 1
-                    }
-                '
-                """
-            }
-        }
-    }
-}
-
-post {
-    success {
-        echo '✅ Deployment successful 🚀'
-    }
-    failure {
-        echo '❌ Deployment failed – check logs'
-    }
-}
-```
-
 }
 
