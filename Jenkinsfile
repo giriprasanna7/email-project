@@ -27,6 +27,7 @@ pipeline {
             steps {
                 sh '''
                 set -e
+                echo "Checking tools"
                 node -v
                 npm -v
                 '''
@@ -74,6 +75,15 @@ pipeline {
                     """
                 }
             }
+        }
+    }
+
+    post {
+        success {
+            echo 'Deployment successful'
+        }
+        failure {
+            echo 'Deployment failed'
         }
     }
 }
