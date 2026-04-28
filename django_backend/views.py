@@ -4,49 +4,52 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Event
-from fastapi_app.tasks import process_event_invites
 from rest_framework.views import APIView
 from .serializers import EventSerializer
+
+# ✅ SAFE import (important)
+try:
+    from fastapi_app.tasks import process_event_invites
+except Exception:
+    process_event_invites = None
+
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_event(request):
     """
     API Endpoint to create an event.
-    It saves the event immediately and offloads notifications to Celery.
     """
-    # Basic data validation (You can replace this with a Serializer later)
+
     title = request.data.get('title')
     description = request.data.get('description', '')
     date = request.data.get('date')
 
     if not title or not date:
         return Response(
-            {"error": "Title and Date are required."}, 
+            {"error": "Title and Date are required."},
             status=status.HTTP_400_BAD_REQUEST
         )
 
     try:
-        # --- STEP 1: Save to DB Immediatey ---
-        # The server does this very fast (milliseconds)
+        # ✅ Save event
         new_event = Event.objects.create(
             title=title,
             description=description,
             date=date,
-            creator=request.user 
+            creator=request.user
         )
 
-        # --- STEP 2: Trigger the Background Task ---
-        # We use .delay() to send it to Redis/Celery.
-        # This does NOT block the code; it happens instantly.
-        process_event_invites.delay(new_event.id, request.user.id)
+        # ✅ Call Celery ONLY if available
+        if process_event_invites:
+            try:
+                process_event_invites.delay(new_event.id, request.user.id)
+            except Exception:
+                pass  # Don't break app if Celery fails
 
-        # --- STEP 3: Return Immediate Response ---
-        # The user gets a success message instantly, even if 
-        # sending 1000 emails takes 5 minutes in the background.
         return Response(
             {
-                "message": "Event created successfully! Invites are being processed in the background.",
+                "message": "Event created successfully!",
                 "event_id": new_event.id
             },
             status=status.HTTP_201_CREATED
@@ -54,9 +57,10 @@ def create_event(request):
 
     except Exception as e:
         return Response(
-            {"error": str(e)}, 
+            {"error": str(e)},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
 
 class CreateEventAPIView(APIView):
 
@@ -67,7 +71,7 @@ class CreateEventAPIView(APIView):
         serializer = EventSerializer(data=request.data)
 
         if serializer.is_valid():
-            serializer.save(created_by=request.user)
+            serializer.save(creator=request.user)  # ✅ fixed field name
             return Response(serializer.data, status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
